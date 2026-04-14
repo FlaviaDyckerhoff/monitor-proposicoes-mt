@@ -69,7 +69,6 @@ async function buscarProposicoes(authHeader) {
   const ano = new Date().getFullYear();
   console.log(`🔍 Buscando proposições de ${ano}...`);
 
-  // Filtra por ano corrente, ordenado por data de leitura decrescente, 100 por página
   const criterias = JSON.stringify([
     {
       field: 'protocoloP.ano',
@@ -78,37 +77,46 @@ async function buscarProposicoes(authHeader) {
     },
   ]);
 
-  const url = `${API_BASE}/proposicao/?page=1&size=100&criterias=${encodeURIComponent(criterias)}`;
-  console.log(`   URL: ${url}`);
+  const todas = [];
+  let pagina = 1;
 
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Authorization: authHeader,
-      Accept: 'application/json',
-    },
-  });
+  while (true) {
+    const url = `${API_BASE}/proposicao/?page=${pagina}&size=100&criterias=${encodeURIComponent(criterias)}`;
+    if (pagina === 1) console.log(`   URL base: ${url}`);
 
-  if (!response.ok) {
-    const texto = await response.text();
-    console.error(`❌ Erro na API: ${response.status} — ${texto.substring(0, 300)}`);
-    return [];
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: authHeader, Accept: 'application/json' },
+    });
+
+    if (!response.ok) {
+      const texto = await response.text();
+      console.error(`❌ Erro na API (página ${pagina}): ${response.status} — ${texto.substring(0, 300)}`);
+      break;
+    }
+
+    const json = await response.json();
+    if (pagina === 1) console.log('📦 Amostra da resposta:', JSON.stringify(json).substring(0, 200));
+
+    const lista =
+      Array.isArray(json)          ? json :
+      Array.isArray(json.entities) ? json.entities :
+      Array.isArray(json.data)     ? json.data :
+      Array.isArray(json.content)  ? json.content :
+      Array.isArray(json.items)    ? json.items :
+      [];
+
+    todas.push(...lista);
+    console.log(`📄 Página ${pagina}: ${lista.length} proposições (total acumulado: ${todas.length})`);
+
+    const hasNext = json.pagination?.response?.has_next_page;
+    if (!hasNext || lista.length === 0 || pagina >= 200) break;
+    pagina++;
+    await new Promise(r => setTimeout(r, 500));
   }
 
-  const json = await response.json();
-  console.log('📦 Estrutura da resposta:', JSON.stringify(json).substring(0, 300));
-
-  // A API da ALMT usa paginação própria — extrair lista
-  const lista =
-    Array.isArray(json)          ? json :
-    Array.isArray(json.data)     ? json.data :
-    Array.isArray(json.content)  ? json.content :
-    Array.isArray(json.items)    ? json.items :
-    Array.isArray(json.lista)    ? json.lista :
-    [];
-
-  console.log(`📊 ${lista.length} proposições recebidas`);
-  return lista;
+  console.log(`📊 Total recebido: ${todas.length} proposições`);
+  return todas;
 }
 
 // ─── Normalização ─────────────────────────────────────────────────────────────
