@@ -1,10 +1,10 @@
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 
-const EMAIL_DESTINO  = process.env.EMAIL_DESTINO;
+const EMAIL_DESTINO   = process.env.EMAIL_DESTINO;
 const EMAIL_REMETENTE = process.env.EMAIL_REMETENTE;
-const EMAIL_SENHA    = process.env.EMAIL_SENHA;
-const ARQUIVO_ESTADO = 'estado.json';
+const EMAIL_SENHA     = process.env.EMAIL_SENHA;
+const ARQUIVO_ESTADO  = 'estado.json';
 
 const OAUTH_URL = 'https://api.al.mt.gov.br/oauth/v2/token';
 const API_BASE  = 'https://api.al.mt.gov.br/api/v1/ssl/proposicao/';
@@ -19,7 +19,7 @@ const ALMT_PASSWORD = process.env.ALMT_PASSWORD;
 function carregarEstado() {
   if (fs.existsSync(ARQUIVO_ESTADO))
     return JSON.parse(fs.readFileSync(ARQUIVO_ESTADO, 'utf8'));
-  return { proposicoes_vistas: [], ultima_execucao: '' };
+  return { ultimo_id: 0, ultima_execucao: '' };
 }
 
 function salvarEstado(estado) {
@@ -62,21 +62,31 @@ async function obterToken() {
   return `${tipo} ${json.access_token}`;
 }
 
-// ─── API ──────────────────────────────────────────────────────────────────────
+// ─── API com cursor por ID ────────────────────────────────────────────────────
 
-async function buscarProposicoes(authHeader) {
+async function buscarProposicoes(authHeader, ultimoIdVisto) {
   const anoAtual = new Date().getFullYear();
-  console.log(`🔍 Buscando proposições de ${anoAtual}...`);
+  console.log(`🔍 Buscando proposições de ${anoAtual} com ID > ${ultimoIdVisto}...`);
 
-  // A API não filtra por ano de forma confiável.
-  // Estratégia: buscar em ordem DECRESCENTE de id (mais recentes primeiro),
-  // filtrar pelo ano no cliente, e parar quando encontrar anos anteriores.
   const todas = [];
+  let cursorId = ultimoIdVisto;
   let pagina = 1;
-  let continuar = true;
 
-  while (continuar) {
-    const url = `${API_BASE}?page=${pagina}&size=20&sort=id&direction=desc`;
+  while (true) {
+    const criterias = JSON.stringify([
+      {
+        field: 'protocoloP.ano',
+        operator: 'greater-than-or-equals',
+        parameter: { type: 'integer', value: anoAtual },
+      },
+      {
+        field: 'cp.id',
+        operator: 'greater-than',
+        parameter: { type: 'integer', value: cursorId },
+      },
+    ]);
+
+    const url = `${API_BASE}?criterias=${encodeURIComponent(criterias)}`;
 
     const response = await fetch(url, {
       method: 'GET',
@@ -95,53 +105,44 @@ async function buscarProposicoes(authHeader) {
     const json = await response.json();
     const entidades = Array.isArray(json.entities) ? json.entities : [];
 
-    if (entidades.length === 0) break;
-
-    let encontrouAnoAnterior = false;
-
-    for (const p of entidades) {
-      const anoP = p.protocoloP?.ano || p.processo?.ano || 0;
-      if (anoP === anoAtual) {
-        todas.push(p);
-      } else if (anoP < anoAtual) {
-        // Chegou em anos anteriores — para a busca
-        encontrouAnoAnterior = true;
-        break;
-      }
-      // anoP > anoAtual (raro) — ignora e continua
+    if (entidades.length === 0) {
+      console.log(`✅ Sem mais proposições após ID ${cursorId}.`);
+      break;
     }
 
-    const temProxima = json.pagination?.response?.has_next_page === true;
-    console.log(`📄 Página ${pagina}: ${entidades.length} recebidas, ${todas.length} do ano ${anoAtual} acumuladas`);
+    todas.push(...entidades);
 
-    if (encontrouAnoAnterior || !temProxima) {
-      continuar = false;
-    } else {
-      pagina++;
-      // Respeitar rate limit: 10 req/s
-      await new Promise(r => setTimeout(r, 150));
+    const ultimoDaPagina = entidades[entidades.length - 1].id;
+    console.log(`📄 Página ${pagina}: ${entidades.length} proposições (IDs ${entidades[0].id}–${ultimoDaPagina})`);
+
+    cursorId = ultimoDaPagina;
+    pagina++;
+
+    await new Promise(r => setTimeout(r, 150));
+
+    if (pagina > 200) {
+      console.log('⚠️ Limite de 200 páginas atingido. Continuará na próxima execução.');
+      break;
     }
   }
 
-  console.log(`📊 Total de ${anoAtual}: ${todas.length} proposições`);
+  console.log(`📊 Total encontrado: ${todas.length} proposições`);
   return todas;
 }
 
 // ─── Normalização ─────────────────────────────────────────────────────────────
 
 function normalizarProposicao(p) {
-  const id     = String(p.id || '');
-  const tipo   = p.tipo?.descricao || '-';
-  const numero = String(p.protocoloP?.proposicaoNum || p.protocoloP?.numero || '-');
-  const ano    = String(p.protocoloP?.ano || p.processo?.ano || '-');
-  const autor  = p.autor?.nome || '-';
-  const data   = p.data_leitura?.date
-    ? p.data_leitura.date.substring(0, 10)
-    : '-';
-  const ementa = (p.ementa || '-').substring(0, 200);
-  const url    = p.url || '';
-
-  return { id, tipo, numero, ano, autor, data, ementa, url };
+  return {
+    id:     String(p.id || ''),
+    tipo:   p.tipo?.descricao || '-',
+    numero: String(p.protocoloP?.proposicaoNum || '-'),
+    ano:    String(p.protocoloP?.ano || '-'),
+    autor:  p.autor?.nome || '-',
+    data:   p.data_leitura?.date ? p.data_leitura.date.substring(0, 10) : '-',
+    ementa: (p.ementa || '-').substring(0, 200),
+    url:    p.url || '',
+  };
 }
 
 // ─── Email ────────────────────────────────────────────────────────────────────
@@ -223,8 +224,8 @@ async function enviarEmail(novas) {
   console.log('🚀 Iniciando monitor ALMT...');
   console.log(`⏰ ${new Date().toLocaleString('pt-BR')}`);
 
-  const estado    = carregarEstado();
-  const idsVistos = new Set(estado.proposicoes_vistas.map(String));
+  const estado   = carregarEstado();
+  const ultimoId = estado.ultimo_id || 0;
 
   let authHeader;
   try {
@@ -234,32 +235,29 @@ async function enviarEmail(novas) {
     process.exit(1);
   }
 
-  const raw = await buscarProposicoes(authHeader);
+  const raw = await buscarProposicoes(authHeader, ultimoId);
 
   if (raw.length === 0) {
-    console.log('⚠️ Nenhuma proposição do ano atual encontrada.');
+    console.log('✅ Sem novidades. Nada a enviar.');
+    estado.ultima_execucao = new Date().toISOString();
+    salvarEstado(estado);
     process.exit(0);
   }
 
-  const proposicoes = raw.map(normalizarProposicao).filter(p => p.id);
-  console.log(`📊 Total normalizado: ${proposicoes.length}`);
-
-  const novas = proposicoes.filter(p => !idsVistos.has(p.id));
+  const novas = raw.map(normalizarProposicao).filter(p => p.id);
   console.log(`🆕 Proposições novas: ${novas.length}`);
 
-  if (novas.length > 0) {
-    novas.sort((a, b) => {
-      if (a.tipo < b.tipo) return -1;
-      if (a.tipo > b.tipo) return 1;
-      return (parseInt(b.numero) || 0) - (parseInt(a.numero) || 0);
-    });
-    await enviarEmail(novas);
-    novas.forEach(p => idsVistos.add(p.id));
-    estado.proposicoes_vistas = Array.from(idsVistos);
-  } else {
-    console.log('✅ Sem novidades. Nada a enviar.');
-  }
+  const maiorId = Math.max(...raw.map(p => Number(p.id)));
 
+  novas.sort((a, b) => {
+    if (a.tipo < b.tipo) return -1;
+    if (a.tipo > b.tipo) return 1;
+    return (parseInt(b.numero) || 0) - (parseInt(a.numero) || 0);
+  });
+
+  await enviarEmail(novas);
+
+  estado.ultimo_id       = maiorId;
   estado.ultima_execucao = new Date().toISOString();
   salvarEstado(estado);
 })();
