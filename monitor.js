@@ -1,13 +1,13 @@
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 
-const EMAIL_DESTINO = process.env.EMAIL_DESTINO;
+const EMAIL_DESTINO  = process.env.EMAIL_DESTINO;
 const EMAIL_REMETENTE = process.env.EMAIL_REMETENTE;
-const EMAIL_SENHA = process.env.EMAIL_SENHA;
+const EMAIL_SENHA    = process.env.EMAIL_SENHA;
 const ARQUIVO_ESTADO = 'estado.json';
 
 const OAUTH_URL = 'https://api.al.mt.gov.br/oauth/v2/token';
-const API_BASE  = 'https://api.al.mt.gov.br/api/v1/ssl';
+const API_BASE  = 'https://api.al.mt.gov.br/api/v1/ssl/proposicao/';
 
 const CLIENT_ID     = process.env.ALMT_CLIENT_ID;
 const CLIENT_SECRET = process.env.ALMT_CLIENT_SECRET;
@@ -42,7 +42,7 @@ async function obterToken() {
   const response = await fetch(OAUTH_URL, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Type':  'application/x-www-form-urlencoded',
       'Cache-Control': 'no-cache',
     },
     body: body.toString(),
@@ -54,111 +54,94 @@ async function obterToken() {
   }
 
   const json = await response.json();
-  const token = json.access_token;
   const tipo  = json.token_type
     ? json.token_type.charAt(0).toUpperCase() + json.token_type.slice(1)
     : 'Bearer';
 
   console.log(`✅ Token obtido (expira em ${json.expires_in}s)`);
-  return `${tipo} ${token}`;
+  return `${tipo} ${json.access_token}`;
 }
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 
 async function buscarProposicoes(authHeader) {
-  const ano = new Date().getFullYear();
-  console.log(`🔍 Buscando proposições de ${ano}...`);
+  const anoAtual = new Date().getFullYear();
+  console.log(`🔍 Buscando proposições de ${anoAtual}...`);
 
-  const criterias = JSON.stringify([
-    {
-      field: 'protocoloP.ano',
-      operator: 'equals',
-      parameter: { type: 'integer', value: ano },
-    },
-  ]);
-
+  // A API não filtra por ano de forma confiável.
+  // Estratégia: buscar em ordem DECRESCENTE de id (mais recentes primeiro),
+  // filtrar pelo ano no cliente, e parar quando encontrar anos anteriores.
   const todas = [];
   let pagina = 1;
+  let continuar = true;
 
-  while (true) {
-    const url = `${API_BASE}/proposicao/?page=${pagina}&size=100&criterias=${encodeURIComponent(criterias)}`;
-    if (pagina === 1) console.log(`   URL base: ${url}`);
+  while (continuar) {
+    const url = `${API_BASE}?page=${pagina}&size=20&sort=id&direction=desc`;
 
     const response = await fetch(url, {
       method: 'GET',
-      headers: { Authorization: authHeader, Accept: 'application/json' },
+      headers: {
+        Authorization: authHeader,
+        Accept: 'application/json',
+      },
     });
 
     if (!response.ok) {
       const texto = await response.text();
-      console.error(`❌ Erro na API (página ${pagina}): ${response.status} — ${texto.substring(0, 300)}`);
+      console.error(`❌ Erro na API: ${response.status} — ${texto.substring(0, 200)}`);
       break;
     }
 
     const json = await response.json();
-    if (pagina === 1) console.log('📦 Amostra da resposta:', JSON.stringify(json).substring(0, 200));
+    const entidades = Array.isArray(json.entities) ? json.entities : [];
 
-    const lista =
-      Array.isArray(json)          ? json :
-      Array.isArray(json.entities) ? json.entities :
-      Array.isArray(json.data)     ? json.data :
-      Array.isArray(json.content)  ? json.content :
-      Array.isArray(json.items)    ? json.items :
-      [];
+    if (entidades.length === 0) break;
 
-    todas.push(...lista);
-    console.log(`📄 Página ${pagina}: ${lista.length} proposições (total acumulado: ${todas.length})`);
+    let encontrouAnoAnterior = false;
 
-    const hasNext = json.pagination?.response?.has_next_page;
-    if (!hasNext || lista.length === 0 || pagina >= 200) break;
-    pagina++;
-    await new Promise(r => setTimeout(r, 500));
+    for (const p of entidades) {
+      const anoP = p.protocoloP?.ano || p.processo?.ano || 0;
+      if (anoP === anoAtual) {
+        todas.push(p);
+      } else if (anoP < anoAtual) {
+        // Chegou em anos anteriores — para a busca
+        encontrouAnoAnterior = true;
+        break;
+      }
+      // anoP > anoAtual (raro) — ignora e continua
+    }
+
+    const temProxima = json.pagination?.response?.has_next_page === true;
+    console.log(`📄 Página ${pagina}: ${entidades.length} recebidas, ${todas.length} do ano ${anoAtual} acumuladas`);
+
+    if (encontrouAnoAnterior || !temProxima) {
+      continuar = false;
+    } else {
+      pagina++;
+      // Respeitar rate limit: 10 req/s
+      await new Promise(r => setTimeout(r, 150));
+    }
   }
 
-  console.log(`📊 Total recebido: ${todas.length} proposições`);
+  console.log(`📊 Total de ${anoAtual}: ${todas.length} proposições`);
   return todas;
 }
 
 // ─── Normalização ─────────────────────────────────────────────────────────────
 
 function normalizarProposicao(p) {
-  // Campos mapeados com base na documentação da ALMT
-  const id = p.id || p.cp?.id || String(p.cp?.codigo || '');
+  const id     = String(p.id || '');
+  const tipo   = p.tipo?.descricao || '-';
+  const numero = String(p.protocoloP?.proposicaoNum || p.protocoloP?.numero || '-');
+  const ano    = String(p.protocoloP?.ano || p.processo?.ano || '-');
+  const autor  = p.autor?.nome || '-';
+  const data   = p.data_leitura?.date
+    ? p.data_leitura.date.substring(0, 10)
+    : '-';
+  const ementa = (p.ementa || '-').substring(0, 200);
+  const url    = p.url || '';
 
-  const tipo =
-    p.tipo?.descricao ||
-    p.tipo?.sigla ||
-    p.tipoDescricao ||
-    p.tipoSigla ||
-    '-';
-
-  const numero =
-    p.protocoloP?.proposicaoNum ||
-    p.numero ||
-    p.cp?.codigo ||
-    '-';
-
-  const ano =
-    p.protocoloP?.ano ||
-    p.ano ||
-    '-';
-
-  const autor =
-    p.autor?.nome ||
-    p.cadastroPolitico?.nome ||
-    p.autorNome ||
-    '-';
-
-  const data =
-    p.cp?.dataLeitura
-      ? p.cp.dataLeitura.substring(0, 10)
-      : p.dataLeitura
-        ? p.dataLeitura.substring(0, 10)
-        : '-';
-
-  const ementa = (p.cp?.ementa || p.ementa || '-').substring(0, 200);
-
-  return { id: String(id), tipo, numero: String(numero), ano: String(ano), autor, data, ementa };
+  return { id, tipo, numero, ano, autor, data, ementa, url };
 }
 
 // ─── Email ────────────────────────────────────────────────────────────────────
@@ -176,17 +159,26 @@ async function enviarEmail(novas) {
     porTipo[tipo].push(p);
   });
 
+  const avisoVolume = novas.length > 50
+    ? `<div style="background:#fff3cd;border:1px solid #ffc107;padding:12px 16px;border-radius:4px;margin-bottom:16px;color:#856404;font-size:13px">
+        ⚠️ <strong>Volume alto:</strong> ${novas.length} proposições novas nesta execução. Pode ser o primeiro run.
+       </div>`
+    : '';
+
   const linhas = Object.keys(porTipo).sort().map(tipo => {
     const header = `<tr><td colspan="5" style="padding:10px 8px 4px;background:#f0f4f8;font-weight:bold;color:#1a3a5c;font-size:13px;border-top:2px solid #1a3a5c">${tipo} — ${porTipo[tipo].length} proposição(ões)</td></tr>`;
-    const rows = porTipo[tipo].map(p =>
-      `<tr>
+    const rows = porTipo[tipo].map(p => {
+      const link = p.url
+        ? `<a href="${p.url}" style="color:#1a3a5c;text-decoration:none" target="_blank">${p.numero}/${p.ano}</a>`
+        : `${p.numero}/${p.ano}`;
+      return `<tr>
         <td style="padding:8px;border-bottom:1px solid #eee;color:#555;font-size:12px">${p.tipo}</td>
-        <td style="padding:8px;border-bottom:1px solid #eee"><strong>${p.numero}/${p.ano}</strong></td>
+        <td style="padding:8px;border-bottom:1px solid #eee"><strong>${link}</strong></td>
         <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px">${p.autor}</td>
         <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;white-space:nowrap">${p.data}</td>
         <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px">${p.ementa}</td>
-      </tr>`
-    ).join('');
+      </tr>`;
+    }).join('');
     return header + rows;
   }).join('');
 
@@ -196,6 +188,7 @@ async function enviarEmail(novas) {
         🏛️ ALMT — ${novas.length} nova(s) proposição(ões)
       </h2>
       <p style="color:#666">Monitoramento automático — ${new Date().toLocaleString('pt-BR')}</p>
+      ${avisoVolume}
       <table style="width:100%;border-collapse:collapse;font-size:14px">
         <thead>
           <tr style="background:#1a3a5c;color:white">
@@ -230,7 +223,7 @@ async function enviarEmail(novas) {
   console.log('🚀 Iniciando monitor ALMT...');
   console.log(`⏰ ${new Date().toLocaleString('pt-BR')}`);
 
-  const estado = carregarEstado();
+  const estado    = carregarEstado();
   const idsVistos = new Set(estado.proposicoes_vistas.map(String));
 
   let authHeader;
@@ -244,11 +237,11 @@ async function enviarEmail(novas) {
   const raw = await buscarProposicoes(authHeader);
 
   if (raw.length === 0) {
-    console.log('⚠️ Nenhuma proposição encontrada.');
+    console.log('⚠️ Nenhuma proposição do ano atual encontrada.');
     process.exit(0);
   }
 
-  const proposicoes = raw.map(normalizarProposicao).filter(p => p.id && p.id !== '');
+  const proposicoes = raw.map(normalizarProposicao).filter(p => p.id);
   console.log(`📊 Total normalizado: ${proposicoes.length}`);
 
   const novas = proposicoes.filter(p => !idsVistos.has(p.id));
