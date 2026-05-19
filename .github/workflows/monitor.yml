@@ -2,8 +2,8 @@ name: Monitor Proposições MT
 
 on:
   schedule:
-    - cron: '0 11 * * *'   # 08:00 BRT
-    - cron: '0 19 * * *'   # 16:00 BRT
+    - cron: '20 11 * * *'   # 08:20 BRT
+    - cron: '20 19 * * *'   # 16:20 BRT
   workflow_dispatch:
 
 jobs:
