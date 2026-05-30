@@ -211,7 +211,7 @@ async function enviarEmail(novas) {
   await transporter.sendMail({
     from: `"Monitor ALMT" <${EMAIL_REMETENTE}>`,
     to: EMAIL_DESTINO,
-    subject: `🏛️ ALMT: ${novas.length} nova(s) proposição(ões) — ${new Date().toLocaleDateString('pt-BR')}`,
+    subject: `🏛️ Mato Grosso: ${novas.length} nova(s) proposição(ões) — ${new Date().toLocaleDateString('pt-BR')}`,
     html,
   });
 
