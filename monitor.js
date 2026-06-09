@@ -140,7 +140,7 @@ function normalizarProposicao(p) {
     ano:    String(p.protocoloP?.ano || '-'),
     autor:  p.autor?.nome || '-',
     data:   p.data_leitura?.date ? p.data_leitura.date.substring(0, 10) : '-',
-    ementa: (p.ementa || '-').substring(0, 200),
+    ementa: (p.ementa || '-'),
     url:    p.url || '',
   };
 }
@@ -167,7 +167,39 @@ function compararTiposEmail(a, b) {
   return String(a || '').localeCompare(String(b || ''), 'pt-BR');
 }
 
+
+const CLIENTES_NOMES_PROPRIOS = [
+  'FIRJAN', 'Red Bull', 'Sindicerv', 'Boticario', 'Boticário', 'Abrasel', 'ANBRASEL',
+  'Energisa', 'EnergisaLuz', 'SABESP', 'COMGAS', 'COMGÁS', 'Eletromidia', 'Eletromídia',
+  'BRT', 'Regenera', 'Nova Infra', 'Seta', 'SETA', 'AkzoNobel', 'Expedia', 'RTSC',
+  'Huawei', 'Carrefour', 'JBS', 'Ajinomoto', 'Vibra', 'Mindlab', 'ABVTEX', 'Neoenergia', 'ENEL'
+];
+
+function clientesCitadosNaProposicao(p) {
+  const texto = [p.cliente, p.clientes, p.autor, p.autores, p.tipo, p.rotulo, p.titulo, p.identificacao, p.ementa]
+    .filter(Boolean)
+    .join(' ');
+  const achados = [];
+  for (const nome of CLIENTES_NOMES_PROPRIOS) {
+    const escaped = nome.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('(^|[^A-Za-zÀ-ÿ0-9])' + escaped + '([^A-Za-zÀ-ÿ0-9]|$)', 'i');
+    if (re.test(texto) && !achados.some(a => a.toLowerCase() === nome.toLowerCase())) achados.push(nome);
+  }
+  return achados;
+}
+
+function anotarClientesCitados(proposicoes) {
+  for (const p of proposicoes || []) {
+    const clientes = clientesCitadosNaProposicao(p);
+    p.clientesCitados = clientes;
+    if (clientes.length && p.ementa && !String(p.ementa).includes('Cliente citado:')) {
+      p.ementa = String(p.ementa).trim() + ' | Cliente citado: ' + clientes.join(', ');
+    }
+  }
+}
+
 async function enviarEmail(novas) {
+  anotarClientesCitados(novas);
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: EMAIL_REMETENTE, pass: EMAIL_SENHA },
