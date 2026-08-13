@@ -678,7 +678,7 @@ async function enviarEmail(novas) {
   });
 
   if (CONTROLE03_FORCE_LATEST) {
-    const loteRadar03 = novas.length ? novas : raw.map(normalizarProposicao).filter(p => p.id).slice(-120);
+    const loteRadar03 = raw.map(normalizarProposicao).filter(p => p.id).slice(-120);
     await sincronizarRadar03(loteRadar03);
     estado.ultima_execucao = new Date().toISOString();
     salvarEstado(estado);
