@@ -657,7 +657,7 @@ async function enviarEmail(novas) {
     process.exit(1);
   }
 
-  const raw = await buscarProposicoes(authHeader, ultimoId);
+  const raw = await buscarProposicoes(authHeader, CONTROLE03_FORCE_LATEST ? 0 : ultimoId);
 
   if (raw.length === 0) {
     console.log('✅ Sem novidades. Nada a enviar.');
@@ -677,8 +677,17 @@ async function enviarEmail(novas) {
     return (parseInt(b.numero) || 0) - (parseInt(a.numero) || 0);
   });
 
+  if (CONTROLE03_FORCE_LATEST) {
+    const loteRadar03 = novas.length ? novas : raw.map(normalizarProposicao).filter(p => p.id).slice(-120);
+    await sincronizarRadar03(loteRadar03);
+    estado.ultima_execucao = new Date().toISOString();
+    salvarEstado(estado);
+    console.log('✅ Radar 03 atualizado fora de hora com a lista atual da fonte. Email não enviado.');
+    return;
+  }
+
   await sincronizarRadar03(novas);
-    await enviarEmail(novas);
+  await enviarEmail(novas);
 
   estado.ultimo_id       = maiorId;
   estado.ultima_execucao = new Date().toISOString();

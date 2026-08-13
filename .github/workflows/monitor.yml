@@ -2,6 +2,11 @@ name: Monitor Proposições MT
 
 on:
   workflow_dispatch:
+    inputs:
+      controle03_force_latest:
+        description: 'Reenviar lote atual para Controle 03 sem email'
+        required: false
+        default: '0'
 
 jobs:
   monitorar:
@@ -31,6 +36,9 @@ jobs:
           CONTROLE03_API_USER: ${{ secrets.CONTROLE03_API_USER }}
           CONTROLE03_API_PASS: ${{ secrets.CONTROLE03_API_PASS }}
           CONTROLE03_STATE_URL: ${{ secrets.CONTROLE03_STATE_URL }}
+          CONTROLE03_FORCE_LATEST: ${{ github.event.inputs.controle03_force_latest || '0' }}
+          SUPPRESS_EMAIL: ${{ github.event.inputs.controle03_force_latest == '1' && 'true' || '' }}
+          SKIP_EMAIL: ${{ github.event.inputs.controle03_force_latest == '1' && '1' || '' }}
           ALMT_CLIENT_ID:     ${{ secrets.ALMT_CLIENT_ID }}
           ALMT_CLIENT_SECRET: ${{ secrets.ALMT_CLIENT_SECRET }}
           ALMT_USERNAME:      ${{ secrets.ALMT_USERNAME }}
