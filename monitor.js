@@ -1,5 +1,34 @@
+const FICHA_URL = process.env.FICHA_URL || 'https://doe.monitorlegislativo.com.br/ficha';
+
+function fichaEmailButtonHtml() {
+  return '<div style="background:#eef6ff;border:1px solid #c7ddf2;border-radius:6px;padding:11px 13px;margin:12px 0;color:#173d63;font-size:13px;line-height:1.45">' +
+    '<strong>Ficha</strong><br>' +
+    '<span>Cole o link oficial de uma proposição para criar ficha e acelerar a revisão/cadastro.</span><br>' +
+    '<a href="' + FICHA_URL + '" style="display:inline-block;background:#0f3d5c;color:white;text-decoration:none;border-radius:4px;padding:8px 11px;font-weight:bold;margin-top:8px">Criar ficha</a>' +
+    '</div>';
+}
+
 const fs = require('fs');
 const nodemailer = require('nodemailer');
+let promoverInteresseClienteProposicao = (_item, atuais) => Array.isArray(atuais) ? atuais : [];
+try {
+  try {
+    ({ promoverInteresseClienteProposicao } = require('./client_interest_matcher_js'));
+  } catch (_localErr) {
+    ({ promoverInteresseClienteProposicao } = require('../../agents/pautas/client_interest_matcher_js'));
+  }
+} catch (err) {
+  console.warn('⚠️ Matcher cliente/palavra comum indisponível; usando destaque legado: ' + err.message);
+}
+
+function mlClientInterestContext() {
+  return {
+    uf: typeof CLIENT_INTEREST_UF !== 'undefined' ? CLIENT_INTEREST_UF : (process.env.CLIENT_INTEREST_UF || process.env.UF || ''),
+    municipio: typeof CLIENT_INTEREST_MUNICIPIO !== 'undefined' ? CLIENT_INTEREST_MUNICIPIO : (process.env.CLIENT_INTEREST_MUNICIPIO || process.env.MUNICIPIO || ''),
+    casa: typeof CASA_RADAR03 !== 'undefined' ? CASA_RADAR03 : (process.env.CASA_RADAR03 || process.env.CASA || ''),
+  };
+}
+
 
 const EMAIL_DESTINO   = process.env.EMAIL_DESTINO;
 const EMAIL_REMETENTE = process.env.EMAIL_REMETENTE;
@@ -21,7 +50,6 @@ const CLIENT_ID     = process.env.ALMT_CLIENT_ID;
 const CLIENT_SECRET = process.env.ALMT_CLIENT_SECRET;
 const ALMT_USERNAME = process.env.ALMT_USERNAME;
 const ALMT_PASSWORD = process.env.ALMT_PASSWORD;
-
 // ─── Estado ───────────────────────────────────────────────────────────────────
 
 function carregarEstado() {
@@ -237,7 +265,7 @@ function clientesCitadosNaProposicao(p) {
     const re = new RegExp('(^|[^A-Za-zÀ-ÿ0-9])' + escaped + '([^A-Za-zÀ-ÿ0-9]|$)', 'i');
     if (re.test(texto) && !achados.some(a => a.toLowerCase() === nome.toLowerCase())) achados.push(nome);
   }
-  return achados;
+  return promoverInteresseClienteProposicao(p, achados, mlClientInterestContext());
 }
 
 function anotarClientesCitados(proposicoes) {
@@ -635,7 +663,7 @@ async function enviarEmail(novas) {
     from: `"Monitor ALMT" <${EMAIL_REMETENTE}>`,
     to: EMAIL_DESTINO,
     subject: assuntoEmailClienteCitado(novas, `🏛️ Mato Grosso: ${novas.length} nova(s) proposição(ões) — ${new Date().toLocaleDateString('pt-BR')}`),
-    html,
+    html: fichaEmailButtonHtml() + html,
   });
 
   console.log(`✅ Email enviado com ${novas.length} proposições novas.`);
